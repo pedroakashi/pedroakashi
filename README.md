@@ -17,4 +17,5 @@ Current,i'm studying Computer Science at IMT
   <img align="cente" alt="phyton" scr="https://img.shields.io/badge/Python-14354C?style=for-the-badge&logo=python&logoColor=white" />
   <img align="cente" alt="dart" scr="https://img.shields.io/badge/Dart-0175C2?style=for-the-badge&logo=dart&logoColor=white" />
    <img align="cente" alt="javascript" scr="https://img.shields.io/badge/JavaScript-323330?style=for-the-badge&logo=javascript&logoColor=F7DF1E" />
+</div>div><br/>
  

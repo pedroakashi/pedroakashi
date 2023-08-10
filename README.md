@@ -2,6 +2,7 @@
 (Olá, me chamo Pedro)
 
 Current,i'm studying Computer Science at IMT
+
 (Atualmente, estou estudando Ciencia da Computação no IMT)
 
 [![Gmail](https://img.shields.io/badge/Gmail-D14836?style=for-the-badge&logo=gmail&logoColor=white)](https://mail.google.com/mail/u/0/#inbox?compose=new)

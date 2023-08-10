@@ -10,6 +10,6 @@ Current,i'm studying Computer Science at IMT
 
 ![Pedro's GitHub stats](https://github-readme-stats.vercel.app/api?username=pedroakashi&show_icons=true&theme=dracula)
 
-![Pedro's GitHub stats](https://github-readme-stats.vercel.app/api?username=pedroakashia&show_icons=true)
+
 
 

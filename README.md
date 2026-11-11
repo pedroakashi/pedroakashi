@@ -13,3 +13,21 @@ Current,i'm studying Computer Science at IMT
 
 
 
+Crie duas Lambdas Python para curvas do IM8 → Murex, seguindo exatamente o padrão das Lambdas obterdadospreco e enviardadospreco deste repositório (estrutura de pastas app/src, requests, loguru, logger_config, sts_service, credentials_service, http_request_error).
+
+1) obterdadoscurvas (copie a estrutura da obterdadospreco):
+- Recebe o evento do Connector com codigo_curva, nome_curva e data_liberacao.
+- Obtém o token STS e chama a API de curvas do IM8.
+- Filtra só os pilares: descarta os pontos marcados como interpolados. O nome do campo vem da env CAMPO_INTERPOLADO (padrão "indicador_interpolado").
+- Monta a mensagem {"curva": {...}, "pilares": [...]}. O envio para SQS fica como TODO.
+- Crie um run_local.py com evento e resposta do IM8 simulados, que salve as mensagens em saida/mensagens_sqs.json.
+
+2) gravardadoscurvas (copie o esquema de template da enviardadospreco):
+- Recebe Records da SQS e gera o XML da curva com um template que tem a palavra "dadoslambda", substituída pelos dados.
+- Use o mesmo envelope do XML de preço (GuiRoot / XmlCache / MarketParameters). Por dentro use, provisoriamente:
+  <mp:curve mp:name="..." mp:code="..." mp:date="AAAAMMDD">
+    <mp:pillar mp:label="30D" mp:days="30" mp:rate="10.7200"/>
+- O destino (API do Murex ou EFS) fica como TODO.
+- Crie um run_local.py que leia ../../obterdadoscurvas/app/saida/mensagens_sqs.json e grave saida/{nome_curva}_{data}.xml.
+
+Marque com # PROVISÓRIO: as tags da curva, os campos da resposta do IM8 (prazo_dias, taxa) e o campo de interpolado.

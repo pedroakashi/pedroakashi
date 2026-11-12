@@ -10,16 +10,24 @@ Current,i'm studying Computer Science at IMT
 
 ![Pedro's GitHub stats](https://github-readme-stats.vercel.app/api?username=pedroakashi&show_icons=true&theme=dracula)
 
-credentials_service.py
-curva_event_model.py
-evento_teste.json
-http_request_error.py
-im8_curvas_service.py
-lambda_function.py
-logger_config.py
-pilares_service.py
-requirements
-run_local.py
-sts_service.py
+"""Gera o XML das curvas a partir das mensagens salvas pela captura (../obterdadoscurvas/mensagens_sqs.json)."""
+import json
+import os
+import sys
+
+os.environ.setdefault("LOG_JSON", "false")
+import lambda_function  # noqa: E402
+
+origem = sys.argv[1] if len(sys.argv) > 1 else "../obterdadoscurvas/mensagens_sqs.json"
+with open(origem, encoding="utf-8") as f:
+    mensagens = json.load(f)
+
+evento = {"Records": [{"messageId": str(i), "body": json.dumps(m)} for i, m in enumerate(mensagens)]}
+for item in lambda_function.lambda_handler(evento, None):
+    caminho = f"{item['nome_curva']}_{item['data']}.xml"
+    with open(caminho, "w", encoding="utf-8") as f:
+        f.write(item["xml"])
+    print(f"\n===== {caminho} =====\n{item['xml']}")
+
 
 

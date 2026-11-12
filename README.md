@@ -10,30 +10,21 @@ Current,i'm studying Computer Science at IMT
 
 ![Pedro's GitHub stats](https://github-readme-stats.vercel.app/api?username=pedroakashi&show_icons=true&theme=dracula)
 
-import json
+import sys
 import os
-import xml.dom.minidom
-from logger_config import logger
-from xml_curva_service import gerar_xml
+import time
+from loguru import logger
+from sys import platform
 
+if platform == "linux" or platform == "linux2":
+    os.environ['TZ'] = 'America/Sao_Paulo'
+    time.tzset()
 
-def obter_template():
-    """No ambiente AWS virá do bucket de templates (como TEMPLATES_MUREX_S3_KEY na enviardadospreco)."""
-    with open(os.getenv("TEMPLATE_CURVA_LOCAL", "curva_template.xml"), encoding="utf-8") as f:
-        return f.read()
+logger.remove()
+format_template = "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> | <level>{level: <8}</level>\
+ | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
 
-
-def lambda_handler(event, context):
-    template = obter_template()
-    xmls = []
-    for record in event.get("Records", []):
-        mensagem = json.loads(record["body"])
-        curva, pilares = mensagem["curva"], mensagem["pilares"]
-
-        conteudo = gerar_xml(template, curva, pilares)
-        xml.dom.minidom.parseString(conteudo.encode("utf-8"))   # garante XML bem-formado
-        logger.info("XML da curva gerado.", codigo_curva=curva["codigo_curva"], total_pilares=len(pilares))
-        xmls.append({"nome_curva": curva["nome_curva"], "data": curva["data_liberacao"], "xml": conteudo})
-        # Destino (API on-premises do Murex ou EFS) ainda em definição.
-    return xmls
+# Na AWS sai em JSON (serialize=True, igual à obterdadospreco). No teste local, LOG_JSON=false deixa legível.
+logger.add(sink=sys.stderr, backtrace=False, diagnose=False, format=format_template,
+           serialize=os.getenv("LOG_JSON", "true").lower() == "true")
 

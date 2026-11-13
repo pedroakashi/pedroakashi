@@ -1,243 +1,167 @@
-## Teste local (`run_local.py`)
 
-Scripts para rodar as Lambdas localmente, sem AWS e sem IM8 (tudo simulado). Funcionam mesmo sem `loguru`, `requests` e `boto3` instalados: nesse caso usam substitutos locais.
-
-Ordem: rode primeiro o da captura (gera `mensagens_sqs.json`) e depois o da gravação (gera os XMLs).
-
-### `obterdadospreco/run_local.py` (captura)
-
-Como rodar:
-
-```
-cd obterdadospreco
-python run_local.py
-```
-
-```python
-"""Roda a Lambda localmente com o evento de teste, SEM chamar a AWS nem o IM8 (tudo simulado).
-
-Uso (dentro da pasta app):  python run_local.py
-"""
 import json
 import os
-import sys
-import types
-from types import SimpleNamespace
-from unittest.mock import patch
+import re
+import ssl
+import time
+import uuid
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime
 
-# ---------------------------------------------------------------------------
-# Substitutos para rodar em máquina bloqueada (sem pip install).
-# Só são usados se a biblioteca real NÃO estiver instalada. Não afetam a Lambda na AWS.
-# ---------------------------------------------------------------------------
+import boto3
 
-def _instalar_substitutos():
+TIPOS_VALIDOS = ("BASE", "COMPOSTA", "TRANSFER")
+
+
+def log(nivel, mensagem, **campos):
+    print(json.dumps({"level": nivel, "message": mensagem, **campos}, ensure_ascii=False, default=str))
+
+
+# ------------------------------------------------------------------ curva_event_model
+class EventoInvalido(Exception):
+    pass
+
+
+def _para_yyyymmdd(texto):
+    if re.fullmatch(r"\d{8}", texto):
+        return texto
+    if re.match(r"\d{4}-\d{2}-\d{2}", texto):
+        return datetime.strptime(texto[:10], "%Y-%m-%d").strftime("%Y%m%d")
+    raise EventoInvalido(f"data_liberacao inválida: {texto}")
+
+
+def ler_curva(value):
+    for campo in ("codigo_curva", "nome_curva", "nome_tipo_curva", "data_liberacao", "data_inclusao"):
+        if not str(value.get(campo) or "").strip():
+            raise EventoInvalido(f"campo obrigatório ausente: {campo}")
+    tipo = str(value["nome_tipo_curva"]).strip().upper()
+    if tipo not in TIPOS_VALIDOS:
+        raise EventoInvalido(f"nome_tipo_curva desconhecido: {tipo}")
+    return {"codigo_curva": str(value["codigo_curva"]).strip(), "nome_curva": str(value["nome_curva"]).strip(),
+            "tipo_curva": tipo, "data_liberacao": _para_yyyymmdd(str(value["data_liberacao"]).strip()),
+            "data_inclusao": str(value["data_inclusao"]).strip()}
+
+
+# ------------------------------------------------------------------ HTTP
+def _http(metodo, url, headers=None, corpo=None, timeout=15):
+    cafile = os.getenv("CA_CERT_PATH")
+    contexto = ssl.create_default_context(cafile=cafile) if cafile and os.path.exists(cafile) else ssl.create_default_context()
+    req = urllib.request.Request(url, data=corpo.encode("utf-8") if corpo else None, headers=headers or {}, method=metodo)
+    inicio = time.time()
     try:
-        import loguru  # noqa: F401
-    except ImportError:
-        class _Logger:
-            def _log(self, nivel, mensagem, **campos):
-                extras = " ".join(f"{k}={v}" for k, v in campos.items() if k != "extra")
-                print(f"{nivel:<8} | {mensagem} {extras}".rstrip())
-
-            def info(self, mensagem, *args, **campos):
-                self._log("INFO", mensagem, **campos)
-
-            def warning(self, mensagem, *args, **campos):
-                self._log("WARNING", mensagem, **campos)
-
-            def error(self, mensagem, *args, **campos):
-                self._log("ERROR", mensagem, **campos)
-
-            def exception(self, mensagem, *args, **campos):
-                self._log("ERROR", mensagem, **campos)
-
-            def debug(self, mensagem, *args, **campos):
-                pass
-
-            def remove(self, *args, **kwargs):
-                pass
-
-            def add(self, *args, **kwargs):
-                pass
-
-            def configure(self, *args, **kwargs):
-                pass
-
-        modulo = types.ModuleType("loguru")
-        modulo.logger = _Logger()
-        sys.modules["loguru"] = modulo
-        print("[aviso] loguru não instalado: usando substituto local.")
-
-    try:
-        import requests  # noqa: F401
-    except ImportError:
-        requests_mod = types.ModuleType("requests")
-        adapters = types.ModuleType("requests.adapters")
-
-        class Session:
-            def mount(self, *args, **kwargs):
-                pass
-
-            def get(self, *args, **kwargs):
-                raise RuntimeError("requests não instalado: a chamada real ao IM8 não funciona aqui")
-
-        class HTTPAdapter:
-            def __init__(self, *args, **kwargs):
-                pass
-
-        class Retry:
-            def __init__(self, *args, **kwargs):
-                pass
-
-        requests_mod.Session = Session
-        adapters.HTTPAdapter = HTTPAdapter
-        adapters.Retry = Retry
-        requests_mod.adapters = adapters
-        sys.modules["requests"] = requests_mod
-        sys.modules["requests.adapters"] = adapters
-        print("[aviso] requests não instalado: usando substituto local.")
-
-    try:
-        import boto3  # noqa: F401
-    except ImportError:
-        boto3_mod = types.ModuleType("boto3")
-        sessao = types.ModuleType("boto3.session")
-        botocore = types.ModuleType("botocore")
-        excecoes = types.ModuleType("botocore.exceptions")
-
-        class Session:
-            def client(self, *args, **kwargs):
-                raise RuntimeError("boto3 não instalado: o Secrets Manager real não funciona aqui")
-
-        class ClientError(Exception):
-            pass
-
-        sessao.Session = Session
-        boto3_mod.session = sessao
-        excecoes.ClientError = ClientError
-        botocore.exceptions = excecoes
-        sys.modules.update({"boto3": boto3_mod, "boto3.session": sessao,
-                            "botocore": botocore, "botocore.exceptions": excecoes})
-        print("[aviso] boto3 não instalado: usando substituto local.")
+        with urllib.request.urlopen(req, timeout=timeout, context=contexto) as resp:
+            return resp.status, resp.read().decode("utf-8", errors="replace"), int((time.time() - inicio) * 1000)
+    except urllib.error.HTTPError as e:
+        return e.code, e.read().decode("utf-8", errors="replace"), int((time.time() - inicio) * 1000)
+    except Exception as e:  # timeout, DNS, SSL
+        return None, f"{type(e).__name__}: {e}", int((time.time() - inicio) * 1000)
 
 
-_instalar_substitutos()
-
-os.environ.setdefault("LOG_JSON", "false")
-os.environ.setdefault("URL_IM8_CURVAS", "https://curvas-v1-distribuiprecoscorporativos.api-sp.dev.aws.cloud.ihf")
-
-import lambda_function  # noqa: E402
-
-
-def resposta_falsa(self, url, params=None, **kwargs):
-    print(f"\n>>> GET {url}  params={params}")
-    print(f"    headers: {sorted(kwargs['headers'])}")
-    return SimpleNamespace(status_code=200, reason="OK", url=url,
-                           json=lambda: RESPOSTA_IM8_SIMULADA)
+# ------------------------------------------------------------------ credentials_service
+def obter_credenciais():
+    cliente = boto3.client("secretsmanager", region_name=os.getenv("AWS_REGION_NAME", "sa-east-1"))
+    segredo = json.loads(cliente.get_secret_value(SecretId=os.getenv("SECRET_MANAGER_NAME"))["SecretString"])
+    chave_id, chave_secret = os.getenv("AWS_LAMBDA_CLIENT_ID"), os.getenv("AWS_LAMBDA_SECRET_ID")
+    if chave_id not in segredo or chave_secret not in segredo:
+        raise RuntimeError(f"chaves {chave_id} / {chave_secret} não existem no segredo {os.getenv('SECRET_MANAGER_NAME')}")
+    return segredo[chave_id], segredo[chave_secret]
 
 
-# Formato SIMULADO: trocar por uma resposta real da API de curvas assim que houver.
-RESPOSTA_IM8_SIMULADA = {"pontos": [
-    {"prazo_dias": 1,   "taxa": "10.6500", "indicador_interpolado": ""},
-    {"prazo_dias": 30,  "taxa": "10.7200", "indicador_interpolado": ""},
-    {"prazo_dias": 45,  "taxa": "10.7450", "indicador_interpolado": "S"},
-    {"prazo_dias": 90,  "taxa": "10.8100", "indicador_interpolado": ""},
-    {"prazo_dias": 135, "taxa": "10.8600", "indicador_interpolado": "S"},
-    {"prazo_dias": 180, "taxa": "10.9300", "indicador_interpolado": ""},
-    {"prazo_dias": 360, "taxa": "11.1500", "indicador_interpolado": ""},
-]}
+# ------------------------------------------------------------------ sts_service
+def obter_token(client_id, client_secret):
+    url = os.getenv("URLSts").rstrip("/") + "/api/oauth/token"
+    corpo = urllib.parse.urlencode({"grant_type": "client_credentials", "client_id": client_id,
+                                    "client_secret": client_secret})
+    status, texto, ms = _http("GET", url, {"Content-Type": "application/x-www-form-urlencoded"}, corpo, timeout=10)
+    log("INFO", "Resposta do STS.", status=status, tempo_ms=ms)
+    if status != 200:
+        raise RuntimeError(f"STS falhou: status={status} detalhe={texto[:200]}")
+    return json.loads(texto)["access_token"]
 
 
-with open("evento_teste.json", encoding="utf-8") as f:
-    evento = json.load(f)
+# ------------------------------------------------------------------ im8_curvas_service
+def obter_pontos(curva, token, client_id, correlation_id):
+    base = os.getenv("URL_IM8_CURVAS").rstrip("/") + "/curvas/v1"
+    if curva["tipo_curva"] == "TRANSFER":
+        url = f"{base}/pontotransferencias?" + urllib.parse.urlencode(
+            {"codigocurva": curva["codigo_curva"], "dataexecucaocurva": curva["data_liberacao"]})
+    else:
+        url = f"{base}/pontoscurvas/{urllib.parse.quote(curva['nome_curva'], safe='')}?" + urllib.parse.urlencode(
+            {"data_execucao": curva["data_liberacao"]})
+    headers = {"Authorization": "Bearer " + token, "x-itau-apikey": client_id,
+               "x-itau-correlationID": correlation_id, "Accept": "application/json"}
+    if os.getenv("X_APIGW_API_ID"):
+        headers["x-apigw-api-id"] = os.getenv("X_APIGW_API_ID")
 
-with patch.object(lambda_function, "obtain_client_credentials",
-                  return_value=SimpleNamespace(client_id="client-teste", client_secret="x")), \
-     patch.object(lambda_function.StsService, "obtain_sts_token", return_value="token-teste"), \
-     patch("requests.Session.get", resposta_falsa):
-    resultado = lambda_function.lambda_handler(evento, None)
-
-print("\nRESULTADO:", json.dumps(resultado, indent=2, ensure_ascii=False))
-
-# Guarda as mensagens que iriam para a SQS, para a Lambda de gravação usar no teste local dela.
-with open("mensagens_sqs.json", "w", encoding="utf-8") as f:
-    json.dump([r["mensagem_sqs"] for r in resultado if "mensagem_sqs" in r], f, indent=2, ensure_ascii=False)
-print("\nMensagens SQS salvas em mensagens_sqs.json")
-```
-
-### `gravardadospreco/run_local.py` (gravação do XML)
-
-Como rodar:
-
-```
-cd ..\gravardadospreco
-python run_local.py ..\obterdadospreco\mensagens_sqs.json
-```
-
-```python
-"""Gera o XML das curvas a partir das mensagens salvas pela captura (../obterdadoscurvas/mensagens_sqs.json)."""
-import json
-import os
-import sys
-import types
-
-# ---------------------------------------------------------------------------
-# Substitutos para rodar em máquina bloqueada (sem pip install).
-# Só são usados se a biblioteca real NÃO estiver instalada. Não afetam a Lambda na AWS.
-# ---------------------------------------------------------------------------
-
-def _instalar_substitutos():
-    try:
-        import loguru  # noqa: F401
-    except ImportError:
-        class _Logger:
-            def _log(self, nivel, mensagem, **campos):
-                extras = " ".join(f"{k}={v}" for k, v in campos.items() if k != "extra")
-                print(f"{nivel:<8} | {mensagem} {extras}".rstrip())
-
-            def info(self, mensagem, *args, **campos):
-                self._log("INFO", mensagem, **campos)
-
-            def warning(self, mensagem, *args, **campos):
-                self._log("WARNING", mensagem, **campos)
-
-            def error(self, mensagem, *args, **campos):
-                self._log("ERROR", mensagem, **campos)
-
-            def exception(self, mensagem, *args, **campos):
-                self._log("ERROR", mensagem, **campos)
-
-            def debug(self, mensagem, *args, **campos):
-                pass
-
-            def remove(self, *args, **kwargs):
-                pass
-
-            def add(self, *args, **kwargs):
-                pass
-
-            def configure(self, *args, **kwargs):
-                pass
-
-        modulo = types.ModuleType("loguru")
-        modulo.logger = _Logger()
-        sys.modules["loguru"] = modulo
-        print("[aviso] loguru não instalado: usando substituto local.")
+    status, texto, ms = _http("GET", url, headers)
+    log("INFO", "Resposta da API de curvas do IM8.", codigo_curva=curva["codigo_curva"], url=url,
+        status=status, tempo_ms=ms, tamanho_bytes=len(texto))
+    if status != 200:
+        raise RuntimeError(f"API de curvas falhou: status={status} url={url} detalhe={texto[:300]}")
+    return json.loads(texto), url
 
 
-_instalar_substitutos()
+# ------------------------------------------------------------------ pilares_service
+def _lista_de_pontos(resposta):
+    if isinstance(resposta, list):
+        return resposta
+    if isinstance(resposta, dict):
+        if isinstance(resposta.get("pontos"), list):
+            return resposta["pontos"]
+        for valor in resposta.values():          # formato real ainda desconhecido: pega a 1ª lista
+            if isinstance(valor, list):
+                return valor
+    return []
 
-os.environ.setdefault("LOG_JSON", "false")
-import lambda_function  # noqa: E402
 
-origem = sys.argv[1] if len(sys.argv) > 1 else "../obterdadoscurvas/mensagens_sqs.json"
-with open(origem, encoding="utf-8") as f:
-    mensagens = json.load(f)
+def filtrar_pilares(resposta):
+    campo = os.getenv("CAMPO_INTERPOLADO", "indicador_interpolado")
+    pontos = _lista_de_pontos(resposta)
+    pilares = [p for p in pontos if isinstance(p, dict)
+               and str(p.get(campo) or "").strip().upper() in ("", "N", "FALSE", "0")]
+    return pontos, pilares, campo
 
-evento = {"Records": [{"messageId": str(i), "body": json.dumps(m)} for i, m in enumerate(mensagens)]}
-for item in lambda_function.lambda_handler(evento, None):
-    caminho = f"{item['nome_curva']}_{item['data']}.xml"
-    with open(caminho, "w", encoding="utf-8") as f:
-        f.write(item["xml"])
-    print(f"\n===== {caminho} =====\n{item['xml']}")
-```
+
+# ------------------------------------------------------------------ handler
+def lambda_handler(event, context):
+    correlation_id = str(uuid.uuid1())
+    registros = event if isinstance(event, list) else [event]
+    log("INFO", "Início da lambda ObterDadosCurvas (teste console).", correlation_id=correlation_id,
+        total_eventos=len(registros))
+
+    client_id, client_secret = obter_credenciais()
+    token = obter_token(client_id, client_secret)
+
+    resultados = []
+    for elemento in registros:
+        try:
+            curva = ler_curva(elemento["payload"]["value"])
+        except (EventoInvalido, KeyError, TypeError) as e:
+            log("ERROR", "Evento de curva inválido, descartado.", erro=str(e))
+            resultados.append({"status": "INVALIDO", "erro": str(e)})
+            continue
+        try:
+            resposta, url = obter_pontos(curva, token, client_id, correlation_id)
+        except RuntimeError as e:
+            log("ERROR", "Falha ao obter pontos.", codigo_curva=curva["codigo_curva"], erro=str(e))
+            resultados.append({"codigo_curva": curva["codigo_curva"], "status": "ERRO", "erro": str(e)})
+            continue
+
+        pontos, pilares, campo = filtrar_pilares(resposta)
+        primeiro = pontos[0] if pontos and isinstance(pontos[0], dict) else {}
+        log("INFO", "Curva capturada.", codigo_curva=curva["codigo_curva"], total_pontos=len(pontos),
+            total_pilares=len(pilares))
+        resultados.append({
+            "codigo_curva": curva["codigo_curva"], "nome_curva": curva["nome_curva"], "status": "CAPTURADA",
+            "url_chamada": url, "total_pontos": len(pontos), "total_pilares": len(pilares),
+            # diagnóstico para confirmar o formato real da resposta:
+            "chaves_da_resposta": list(resposta.keys()) if isinstance(resposta, dict) else "lista",
+            "campos_de_cada_ponto": list(primeiro.keys()),
+            "campo_interpolado_existe": campo in primeiro,
+            "amostra_pontos": pontos[:5],
+        })
+
+    log("INFO", "Término.", correlation_id=correlation_id)
+    return {"correlation_id": correlation_id, "resultados": resultados}
